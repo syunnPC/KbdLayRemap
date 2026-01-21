@@ -1,7 +1,39 @@
 #include "KeyboardConnect.h"
 #include "RemapEngine.h"
 
-static NTSTATUS KbdLayForwardSynchronously(_In_ WDFREQUEST Request, _In_ WDFIOTARGET Target);
+// Forward helpers.
+static NTSTATUS KbdLayForwardSendAndForget(_In_ WDFREQUEST Request, _In_ WDFIOTARGET Target);
+
+static VOID
+KbdLayClearUpperConnectLocked(_Inout_ PKBDLAY_DEVICE_CONTEXT Ctx)
+{
+    Ctx->UpperConnectValid = FALSE;
+    RtlZeroMemory(&Ctx->UpperConnect, sizeof(Ctx->UpperConnect));
+}
+
+static VOID
+KbdLayConnectCompletionRoutine(
+    _In_ WDFREQUEST Request,
+    _In_ WDFIOTARGET Target,
+    _In_ PWDF_REQUEST_COMPLETION_PARAMS CompletionParams,
+    _In_ WDFCONTEXT Context)
+{
+    UNREFERENCED_PARAMETER(Target);
+
+    PKBDLAY_DEVICE_CONTEXT ctx = (PKBDLAY_DEVICE_CONTEXT)Context;
+    NTSTATUS status = CompletionParams->IoStatus.Status;
+
+    // If the lower stack failed the connect, roll back our cached connect state.
+    if (!NT_SUCCESS(status) && ctx != NULL)
+    {
+        WdfSpinLockAcquire(ctx->Lock);
+        KbdLayClearUpperConnectLocked(ctx);
+        WdfSpinLockRelease(ctx->Lock);
+    }
+
+    // We own completion when we set a completion routine.
+    WdfRequestComplete(Request, status);
+}
 
 NTSTATUS
 KbdLayHandleInternalIoctl(
@@ -16,10 +48,16 @@ KbdLayHandleInternalIoctl(
 
     WDFDEVICE device = WdfIoQueueGetDevice(Queue);
     PKBDLAY_DEVICE_CONTEXT ctx = KbdLayGetDeviceContext(device);
+    WDFIOTARGET target = WdfDeviceGetIoTarget(device);
 
     if (IoControlCode == IOCTL_INTERNAL_KEYBOARD_CONNECT)
     {
-        if (ctx->UpperConnectValid)
+        // Only allow one connection.
+        WdfSpinLockAcquire(ctx->Lock);
+        BOOLEAN alreadyConnected = ctx->UpperConnectValid ? TRUE : FALSE;
+        WdfSpinLockRelease(ctx->Lock);
+
+        if (alreadyConnected)
         {
             WdfRequestComplete(Request, STATUS_SHARING_VIOLATION);
             return STATUS_SHARING_VIOLATION;
@@ -34,51 +72,63 @@ KbdLayHandleInternalIoctl(
             return status;
         }
 
-        // Save original class connect info locally, substitute ours (Kbfiltr pattern).
-        // We only publish ctx->UpperConnect after the request succeeds.
-        CONNECT_DATA upper = *cd;
+        // Cache original connect info so our callback can call the next driver.
+        WdfSpinLockAcquire(ctx->Lock);
+        ctx->UpperConnect = *cd;
+        ctx->UpperConnectValid = TRUE;
+        WdfSpinLockRelease(ctx->Lock);
 
+        // Hook into the report chain.
         cd->ClassDeviceObject = WdfDeviceWdmGetDeviceObject(device);
-        // CONNECT_DATA.ClassService is declared as PVOID (kbdmou.h). Avoid C4152 by
-        // converting via integer type.
+
+#pragma warning(push)
+#pragma warning(disable : 4152) // function/data pointer conversion for CONNECT_DATA.ClassService
         cd->ClassService = (PVOID)(ULONG_PTR)KbdLayClassServiceCallback;
+#pragma warning(pop)
 
-        // Forward to lower stack. Do NOT complete the request here if send succeeds;
-        // the lower target completes it.
-        status = KbdLayForwardSynchronously(Request, WdfDeviceGetIoTarget(device));
+        // Forward down and complete in our completion routine.
+        // NOTE: WdfRequestFormatRequestUsingCurrentType returns VOID.
+        WdfRequestFormatRequestUsingCurrentType(Request);
+        WdfRequestSetCompletionRoutine(Request, KbdLayConnectCompletionRoutine, (WDFCONTEXT)ctx);
 
-        if (NT_SUCCESS(status))
+        if (!WdfRequestSend(Request, target, WDF_NO_SEND_OPTIONS))
         {
+            // Request NOT sent => we still own it and must complete.
+            status = WdfRequestGetStatus(Request);
+
+            // Roll back cached state to allow retry.
             WdfSpinLockAcquire(ctx->Lock);
-            ctx->UpperConnect = upper;
-            ctx->UpperConnectValid = TRUE;
+            KbdLayClearUpperConnectLocked(ctx);
             WdfSpinLockRelease(ctx->Lock);
+
+            WdfRequestComplete(Request, status);
+            return status;
         }
 
-        return status;
+        return STATUS_PENDING;
     }
 
-    // pass-through for other internal IOCTLs
-    return KbdLayForwardSynchronously(Request, WdfDeviceGetIoTarget(device));
+    // Pass-through for all other internal IOCTLs.
+    return KbdLayForwardSendAndForget(Request, target);
 }
 
 static NTSTATUS
-KbdLayForwardSynchronously(_In_ WDFREQUEST Request, _In_ WDFIOTARGET Target)
+KbdLayForwardSendAndForget(_In_ WDFREQUEST Request, _In_ WDFIOTARGET Target)
 {
-    WDF_REQUEST_SEND_OPTIONS opt;
-    WDF_REQUEST_SEND_OPTIONS_INIT(&opt, WDF_REQUEST_SEND_OPTION_SYNCHRONOUS);
+    // NOTE: WdfRequestFormatRequestUsingCurrentType returns VOID.
+    WdfRequestFormatRequestUsingCurrentType(Request);
 
-    if (!WdfRequestSend(Request, Target, &opt))
+    WDF_REQUEST_SEND_OPTIONS options;
+    WDF_REQUEST_SEND_OPTIONS_INIT(&options, WDF_REQUEST_SEND_OPTION_SEND_AND_FORGET);
+
+    if (!WdfRequestSend(Request, Target, &options))
     {
-        // Request was NOT sent, so we still own it and must complete.
         NTSTATUS st = WdfRequestGetStatus(Request);
         WdfRequestComplete(Request, st);
         return st;
     }
 
-    // Sent successfully. In synchronous mode, this returns after the lower driver
-    // completes the request.
-    return WdfRequestGetStatus(Request);
+    return STATUS_PENDING;
 }
 
 VOID
@@ -88,7 +138,7 @@ KbdLayClassServiceCallback(
     _In_ PKEYBOARD_INPUT_DATA InputDataEnd,
     _Inout_ PULONG InputDataConsumed)
 {
-    // DeviceObject is our filter's WDM device object (we substituted it).
+    // DeviceObject is our filter's WDM device object (we substituted it in CONNECT_DATA).
     WDFDEVICE device = WdfWdmDeviceGetWdfDeviceHandle(DeviceObject);
     if (device == NULL)
         return;
@@ -115,8 +165,7 @@ KbdLayClassServiceCallback(
         return;
     }
 
-    // Expand buffer: worst-case 3 outputs per input (shift toggle + key + restore)
-    // Keep it small; if too big, bypass.
+    // Expand buffer: worst-case 3 outputs per input.
     enum { KBLAY_MAX_OUT = 256 };
     KEYBOARD_INPUT_DATA out[KBLAY_MAX_OUT];
     ULONG outCount = 0;
@@ -124,16 +173,14 @@ KbdLayClassServiceCallback(
     for (PKEYBOARD_INPUT_DATA p = InputDataStart; p < InputDataEnd; ++p)
     {
         KEYBOARD_INPUT_DATA tmp[3];
-        size_t produced = 0;
         BOOLEAN didRemap = FALSE;
 
-        produced = KbdLayRemapOne(ctx, p, tmp, 3, &didRemap);
+        size_t produced = KbdLayRemapOne(ctx, p, tmp, RTL_NUMBER_OF(tmp), &didRemap);
 
         if (produced == 0 || (outCount + (ULONG)produced) > KBLAY_MAX_OUT)
         {
-            // Fallback: bypass entire batch
+            // Fallback: bypass entire batch and respect what upper returns in InputDataConsumed.
             upperCb(upper.ClassDeviceObject, InputDataStart, InputDataEnd, InputDataConsumed);
-            *InputDataConsumed = originalCount;
             return;
         }
 
@@ -141,7 +188,7 @@ KbdLayClassServiceCallback(
             out[outCount++] = tmp[i];
     }
 
-    // Call upper with our buffer. Consumption must reflect ORIGINAL input count.
+    // Call upper with our buffer. InputDataConsumed must reflect ORIGINAL input count.
     ULONG dummy = 0;
     upperCb(upper.ClassDeviceObject, out, out + outCount, &dummy);
     *InputDataConsumed = originalCount;

@@ -1,12 +1,14 @@
-#define INITGUID
-
 #include "Device.h"
 #include "KeyboardConnect.h"
 #include "IoctlQueue.h"
 #include "RemapEngine.h"
 
-#include <devpkey.h>   // DEVPKEY_Device_ContainerId
-#include <wdfdevice.h> // WDF_DEVICE_PROPERTY_DATA
+#include <initguid.h>
+#include <devpropdef.h>
+#include <devpkey.h>
+#include <wdfdevice.h>
+
+static const WCHAR KBLAY_SDDL[] = L"D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GR;;;BU)";
 
 static const GUID KBDLAY_GUID_NULL = { 0 };
 
@@ -18,6 +20,13 @@ KbdLayEvtDeviceAdd(_In_ WDFDRIVER Driver, _Inout_ PWDFDEVICE_INIT DeviceInit)
     UNREFERENCED_PARAMETER(Driver);
 
     WdfFdoInitSetFilter(DeviceInit);
+
+    // Enforce device object access policy.
+    UNICODE_STRING sddl;
+    RtlInitUnicodeString(&sddl, KBLAY_SDDL);
+
+    NTSTATUS sddlStatus = WdfDeviceInitAssignSDDLString(DeviceInit, &sddl);
+    if (!NT_SUCCESS(sddlStatus)) return sddlStatus;
 
     WDF_OBJECT_ATTRIBUTES attributes;
     WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&attributes, KBDLAY_DEVICE_CONTEXT);
@@ -63,7 +72,7 @@ static VOID
 KbdLayTryCacheContainerId(_In_ WDFDEVICE Device)
 {
     // Best-effort: query unified device property model.
-    // NOTE: Failure is expected on some stacks; we treat it as non-fatal.
+    // ContainerId groups devnodes belonging to one physical device.
     PKBDLAY_DEVICE_CONTEXT ctx = KbdLayGetDeviceContext(Device);
 
     WDF_DEVICE_PROPERTY_DATA prop;
@@ -73,6 +82,7 @@ KbdLayTryCacheContainerId(_In_ WDFDEVICE Device)
 
     WDFMEMORY mem = NULL;
     DEVPROPTYPE propType = 0;
+
     NTSTATUS status = WdfDeviceAllocAndQueryPropertyEx(
         Device,
         &prop,
