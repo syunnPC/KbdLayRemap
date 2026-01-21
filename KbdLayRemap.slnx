@@ -1,0 +1,26 @@
+<Solution>
+  <Configurations>
+    <Platform Name="ARM64" />
+    <Platform Name="x64" />
+  </Configurations>
+  <Folder Name="/Shared/">
+    <File Path="Shared/KbdLayGuids.h" />
+    <File Path="Shared/KbdLayIoctl.h" />
+    <File Path="Shared/KbdLayRules.h" />
+    <File Path="Shared/Public.h" />
+  </Folder>
+  <Project Path="KbdLayRemap/KbdLayRemap.vcxproj">
+    <Deploy />
+  </Project>
+  <Project Path="KbdLayRemapCli/KbdLayRemapCli.vcxproj" Id="62a322f9-415f-49d6-a18c-f0b56142be62">
+    <BuildDependency Project="KbdLayRemapLib/KbdLayRemapLib.vcxproj" />
+    <Platform Project="x64" />
+  </Project>
+  <Project Path="KbdLayRemapLib/KbdLayRemapLib.vcxproj" Id="30a84785-6ef5-43eb-a5d4-56ce7a79aa84">
+    <Platform Project="x64" />
+  </Project>
+  <Project Path="KbdLayRemapService/KbdLayRemapService.vcxproj" Id="5fdf03b8-374a-4b3f-bab9-5d07837dbc22">
+    <BuildDependency Project="KbdLayRemapLib/KbdLayRemapLib.vcxproj" />
+    <Platform Project="x64" />
+  </Project>
+</Solution>

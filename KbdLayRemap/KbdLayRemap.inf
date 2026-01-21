@@ -1,0 +1,49 @@
+[Version]
+Signature   = "$Windows NT$"
+Class       = Keyboard
+ClassGuid   = {4D36E96B-E325-11CE-BFC1-08002BE10318}
+Provider    = %MfgName%
+DriverVer   = 01/21/2026,1.0.0.0
+CatalogFile = KbdLayRemap.cat
+PnpLockdown = 1
+
+[DestinationDirs]
+Drivers_Dir = 12
+
+[SourceDisksNames]
+1 = %DiskName%,,,.
+
+[SourceDisksFiles]
+KbdLayRemap.sys = 1
+
+[Manufacturer]
+%MfgName% = StdMfg,NTamd64
+
+[StdMfg.NTamd64]
+%KbdLayRemap.DevDesc% = KbdLayRemap_Install, Root\KbdLayRemap
+
+[KbdLayRemap_Install.NT]
+CopyFiles = Drivers_Dir
+
+[KbdLayRemap_Install.NT.HW]
+AddReg = KbdLayRemap_ClassUpperFilter_AddReg
+
+[KbdLayRemap_ClassUpperFilter_AddReg]
+HKLM,"SYSTEM\CurrentControlSet\Control\Class\{4D36E96B-E325-11CE-BFC1-08002BE10318}","UpperFilters",0x00010008,"KbdLayRemap"
+
+[Drivers_Dir]
+KbdLayRemap.sys
+
+[KbdLayRemap_Install.NT.Services]
+AddService = KbdLayRemap,0x00000002,KbdLayRemap_Service_Inst
+
+[KbdLayRemap_Service_Inst]
+ServiceType    = 1
+StartType      = 3
+ErrorControl   = 1
+ServiceBinary  = %12%\KbdLayRemap.sys
+
+[Strings]
+MfgName = "KbdLayRemap"
+DiskName = "KbdLayRemap Install Media"
+KbdLayRemap.DevDesc = "KbdLayRemap Keyboard Filter (Root)"
