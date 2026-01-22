@@ -102,7 +102,7 @@ KbdLayEvtIoDeviceControl(
         status = WdfRequestRetrieveOutputBuffer(Request, sizeof(KBLAY_STATUS_OUTPUT), (PVOID*)&out, &cb);
         if (NT_SUCCESS(status))
         {
-            RtlZeroMemory(out, sizeof(*out));
+            RtlZeroMemory(out, cb < sizeof(*out) ? cb : sizeof(*out));
 
             // Snapshot fields atomically (avoid torn reads on 32-bit targets and reduce inconsistency).
             out->Role = (UINT32)InterlockedCompareExchange((volatile LONG*)&ctx->Role, 0, 0);
