@@ -8,11 +8,17 @@
 
 #include "..\\KbdLayRemapLib\\DeviceId.hpp"
 #include "..\\KbdLayRemapLib\\RuleBlob.hpp"
+#include "..\\KbdLayRemapLib\\WinError.hpp"
 
 static bool GuidInList(const GUID& g, const std::vector<GUID>& list)
 {
     for (auto& x : list) if (IsEqualGUID(g, x)) return true;
     return false;
+}
+
+static void LogWinError(const wchar_t* what)
+{
+    std::wcerr << what << L": " << WinErrorMessage(GetLastError()) << L"\n";
 }
 
 int wmain(int argc, wchar_t** argv)
@@ -53,6 +59,7 @@ int wmain(int argc, wchar_t** argv)
             if (h == INVALID_HANDLE_VALUE)
             {
                 std::wcerr << L"Open failed: " << d.DevicePath << L"\n";
+                LogWinError(L"CreateFileW");
                 continue;
             }
 
@@ -66,7 +73,12 @@ int wmain(int argc, wchar_t** argv)
             {
                 role = KBLAY_ROLE_REMAP;
                 state = KBLAY_STATE_ACTIVE;
-                DeviceIoctlSetRuleBlob(h, blob);
+                if (!DeviceIoctlSetRuleBlob(h, blob))
+                {
+                    LogWinError(L"IOCTL_KBLAY_SET_RULE_BLOB");
+                    role = KBLAY_ROLE_NONE;
+                    state = KBLAY_STATE_BYPASS_HARD;
+                }
             }
             else if (isJis && !isUs)
             {
@@ -74,8 +86,18 @@ int wmain(int argc, wchar_t** argv)
                 state = KBLAY_STATE_ACTIVE; // base side still active, but driver does pass-through for BASE role
             }
 
-            DeviceIoctlSetRole(h, role);
-            DeviceIoctlSetState(h, state);
+            bool okRole = DeviceIoctlSetRole(h, role);
+            if (!okRole) LogWinError(L"IOCTL_KBLAY_SET_ROLE");
+
+            bool okState = DeviceIoctlSetState(h, state);
+            if (!okState) LogWinError(L"IOCTL_KBLAY_SET_STATE");
+
+            if (!okRole || !okState)
+            {
+                // Best-effort fallback to a safe state.
+                DeviceIoctlSetState(h, KBLAY_STATE_BYPASS_HARD);
+                DeviceIoctlSetRole(h, KBLAY_ROLE_NONE);
+            }
 
             CloseHandle(h);
 

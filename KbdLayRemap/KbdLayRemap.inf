@@ -1,3 +1,7 @@
+; KbdLayRemap.inf
+; Keyboard class upper-filter installer (Root-enumerated helper device)
+; Copyright (c) 2026
+
 [Version]
 Signature   = "$Windows NT$"
 Class       = Keyboard
@@ -8,10 +12,11 @@ CatalogFile = KbdLayRemap.cat
 PnpLockdown = 1
 
 [DestinationDirs]
-Drivers_Dir = 12
+DefaultDestDir = 12
+Drivers_Dir    = 12
 
 [SourceDisksNames]
-1 = %DiskName%,,,.
+1 = %DiskName%,,,
 
 [SourceDisksFiles]
 KbdLayRemap.sys = 1
@@ -22,28 +27,51 @@ KbdLayRemap.sys = 1
 [StdMfg.NTamd64]
 %KbdLayRemap.DevDesc% = KbdLayRemap_Install, Root\KbdLayRemap
 
+[ControlFlags]
+ExcludeFromSelect = Root\KbdLayRemap
+
+; ----------------------------
+; Root helper device install
+; ----------------------------
+
 [KbdLayRemap_Install.NT]
 CopyFiles = Drivers_Dir
 
+[KbdLayRemap_Install.NT.Services]
+AddService = KbdLayRemap,0x00000002,KbdLayRemap_Service_Inst
+
+[KbdLayRemap_Service_Inst]
+DisplayName    = %KbdLayRemap.SvcDesc%
+ServiceType    = 1                  ; SERVICE_KERNEL_DRIVER
+StartType      = 3                  ; SERVICE_DEMAND_START (PnP loads for keyboards)
+ErrorControl   = 1                  ; SERVICE_ERROR_NORMAL
+LoadOrderGroup = Keyboard Port
+ServiceBinary  = %12%\KbdLayRemap.sys
+
+; Attach as Keyboard class UpperFilter (append to existing list)
 [KbdLayRemap_Install.NT.HW]
 AddReg = KbdLayRemap_ClassUpperFilter_AddReg
 
 [KbdLayRemap_ClassUpperFilter_AddReg]
 HKLM,"SYSTEM\CurrentControlSet\Control\Class\{4D36E96B-E325-11CE-BFC1-08002BE10318}","UpperFilters",0x00010008,"KbdLayRemap"
 
+; KMDF directives (inbox on Windows 11, but still valid/typical to declare)
+[KbdLayRemap_Install.NT.Wdf]
+KmdfService = KbdLayRemap, KbdLayRemap_WdfSect
+
+[KbdLayRemap_WdfSect]
+; Minimum required KMDF library version (co-installer is not shipped for Win11 target)
+KmdfLibraryVersion = 1.11
+
+; ----------------------------
+; Files
+; ----------------------------
+
 [Drivers_Dir]
 KbdLayRemap.sys
 
-[KbdLayRemap_Install.NT.Services]
-AddService = KbdLayRemap,0x00000002,KbdLayRemap_Service_Inst
-
-[KbdLayRemap_Service_Inst]
-ServiceType    = 1
-StartType      = 3
-ErrorControl   = 1
-ServiceBinary  = %12%\KbdLayRemap.sys
-
 [Strings]
-MfgName = "KbdLayRemap"
-DiskName = "KbdLayRemap Install Media"
-KbdLayRemap.DevDesc = "KbdLayRemap Keyboard Filter (Root)"
+MfgName              = "KbdLayRemap"
+DiskName             = "KbdLayRemap Install Media"
+KbdLayRemap.DevDesc  = "KbdLayRemap Keyboard Filter (Root Installer)"
+KbdLayRemap.SvcDesc  = "KbdLayRemap Keyboard Class Upper Filter"

@@ -107,6 +107,15 @@ KbdLayHandleInternalIoctl(
 
         return STATUS_PENDING;
     }
+    else if (IoControlCode == IOCTL_INTERNAL_KEYBOARD_DISCONNECT)
+    {
+        // Lower stack is disconnecting; drop cached connect state.
+        WdfSpinLockAcquire(ctx->Lock);
+        KbdLayClearUpperConnectLocked(ctx);
+        WdfSpinLockRelease(ctx->Lock);
+
+        return KbdLayForwardSendAndForget(Request, target);
+    }
 
     // Pass-through for all other internal IOCTLs.
     return KbdLayForwardSendAndForget(Request, target);
@@ -141,7 +150,10 @@ KbdLayClassServiceCallback(
     // DeviceObject is our filter's WDM device object (we substituted it in CONNECT_DATA).
     WDFDEVICE device = WdfWdmDeviceGetWdfDeviceHandle(DeviceObject);
     if (device == NULL)
+    {
+        if (InputDataConsumed) *InputDataConsumed = 0;
         return;
+    }
 
     PKBDLAY_DEVICE_CONTEXT ctx = KbdLayGetDeviceContext(device);
 
@@ -154,14 +166,24 @@ KbdLayClassServiceCallback(
     WdfSpinLockRelease(ctx->Lock);
 
     if (!upperValid || upper.ClassService == NULL || upper.ClassDeviceObject == NULL)
+    {
+        if (InputDataConsumed && InputDataEnd >= InputDataStart)
+            *InputDataConsumed = (ULONG)(InputDataEnd - InputDataStart);
         return;
+    }
 
     PSERVICE_CALLBACK_ROUTINE upperCb = (PSERVICE_CALLBACK_ROUTINE)(ULONG_PTR)upper.ClassService;
+
+    if (InputDataEnd < InputDataStart)
+    {
+        if (InputDataConsumed) *InputDataConsumed = 0;
+        return;
+    }
 
     ULONG originalCount = (ULONG)(InputDataEnd - InputDataStart);
     if (originalCount == 0)
     {
-        *InputDataConsumed = 0;
+        if (InputDataConsumed) *InputDataConsumed = 0;
         return;
     }
 
@@ -177,11 +199,30 @@ KbdLayClassServiceCallback(
 
         size_t produced = KbdLayRemapOne(ctx, p, tmp, RTL_NUMBER_OF(tmp), &didRemap);
 
-        if (produced == 0 || (outCount + (ULONG)produced) > KBLAY_MAX_OUT)
+        if (produced == 0)
         {
-            // Fallback: bypass entire batch and respect what upper returns in InputDataConsumed.
-            upperCb(upper.ClassDeviceObject, InputDataStart, InputDataEnd, InputDataConsumed);
-            return;
+            // Best-effort: forward the single input as-is.
+            if (outCount > 0)
+            {
+                ULONG dummy = 0;
+                upperCb(upper.ClassDeviceObject, out, out + outCount, &dummy);
+                outCount = 0;
+            }
+
+            ULONG dummy = 0;
+            upperCb(upper.ClassDeviceObject, p, p + 1, &dummy);
+            continue;
+        }
+
+        if ((outCount + (ULONG)produced) > KBLAY_MAX_OUT)
+        {
+            // Flush current batch to keep output ordered without losing modifier state.
+            if (outCount > 0)
+            {
+                ULONG dummy = 0;
+                upperCb(upper.ClassDeviceObject, out, out + outCount, &dummy);
+                outCount = 0;
+            }
         }
 
         for (size_t i = 0; i < produced; ++i)
@@ -189,7 +230,10 @@ KbdLayClassServiceCallback(
     }
 
     // Call upper with our buffer. InputDataConsumed must reflect ORIGINAL input count.
-    ULONG dummy = 0;
-    upperCb(upper.ClassDeviceObject, out, out + outCount, &dummy);
-    *InputDataConsumed = originalCount;
+    if (outCount > 0)
+    {
+        ULONG dummy = 0;
+        upperCb(upper.ClassDeviceObject, out, out + outCount, &dummy);
+    }
+    if (InputDataConsumed) *InputDataConsumed = originalCount;
 }

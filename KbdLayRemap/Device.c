@@ -91,8 +91,16 @@ KbdLayTryCacheContainerId(_In_ WDFDEVICE Device)
         &mem,
         &propType);
 
-    if (!NT_SUCCESS(status) || propType != DEVPROP_TYPE_GUID || mem == NULL)
+    if (!NT_SUCCESS(status))
+    {
+        if (mem) WdfObjectDelete(mem);
         return;
+    }
+    if (propType != DEVPROP_TYPE_GUID || mem == NULL)
+    {
+        if (mem) WdfObjectDelete(mem);
+        return;
+    }
 
     size_t cb = 0;
     GUID* g = (GUID*)WdfMemoryGetBuffer(mem, &cb);
