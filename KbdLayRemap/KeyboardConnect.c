@@ -23,11 +23,37 @@ KbdLayConnectCompletionRoutine(
     PKBDLAY_DEVICE_CONTEXT ctx = (PKBDLAY_DEVICE_CONTEXT)Context;
     NTSTATUS status = CompletionParams->IoStatus.Status;
 
-    // If the lower stack failed the connect, roll back our cached connect state.
-    if (!NT_SUCCESS(status) && ctx != NULL)
+    if (ctx != NULL)
     {
         WdfSpinLockAcquire(ctx->Lock);
-        KbdLayClearUpperConnectLocked(ctx);
+        ctx->UpperConnectPending = FALSE;
+        if (!NT_SUCCESS(status))
+            KbdLayClearUpperConnectLocked(ctx);
+        WdfSpinLockRelease(ctx->Lock);
+    }
+
+    // We own completion when we set a completion routine.
+    WdfRequestComplete(Request, status);
+}
+
+static VOID
+KbdLayDisconnectCompletionRoutine(
+    _In_ WDFREQUEST Request,
+    _In_ WDFIOTARGET Target,
+    _In_ PWDF_REQUEST_COMPLETION_PARAMS CompletionParams,
+    _In_ WDFCONTEXT Context)
+{
+    UNREFERENCED_PARAMETER(Target);
+
+    PKBDLAY_DEVICE_CONTEXT ctx = (PKBDLAY_DEVICE_CONTEXT)Context;
+    NTSTATUS status = CompletionParams->IoStatus.Status;
+
+    if (ctx != NULL)
+    {
+        WdfSpinLockAcquire(ctx->Lock);
+        ctx->UpperConnectPending = FALSE;
+        if (NT_SUCCESS(status))
+            KbdLayClearUpperConnectLocked(ctx);
         WdfSpinLockRelease(ctx->Lock);
     }
 
@@ -55,6 +81,9 @@ KbdLayHandleInternalIoctl(
         // Only allow one connection.
         WdfSpinLockAcquire(ctx->Lock);
         BOOLEAN alreadyConnected = ctx->UpperConnectValid ? TRUE : FALSE;
+        BOOLEAN pending = ctx->UpperConnectPending ? TRUE : FALSE;
+        if (!alreadyConnected && !pending)
+            ctx->UpperConnectPending = TRUE;
         WdfSpinLockRelease(ctx->Lock);
 
         if (alreadyConnected)
@@ -62,12 +91,20 @@ KbdLayHandleInternalIoctl(
             WdfRequestComplete(Request, STATUS_SHARING_VIOLATION);
             return STATUS_SHARING_VIOLATION;
         }
+        if (pending)
+        {
+            WdfRequestComplete(Request, STATUS_DEVICE_BUSY);
+            return STATUS_DEVICE_BUSY;
+        }
 
         CONNECT_DATA* cd = NULL;
         size_t cb = 0;
         NTSTATUS status = WdfRequestRetrieveInputBuffer(Request, sizeof(CONNECT_DATA), (PVOID*)&cd, &cb);
         if (!NT_SUCCESS(status))
         {
+            WdfSpinLockAcquire(ctx->Lock);
+            ctx->UpperConnectPending = FALSE;
+            WdfSpinLockRelease(ctx->Lock);
             WdfRequestComplete(Request, status);
             return status;
         }
@@ -98,6 +135,7 @@ KbdLayHandleInternalIoctl(
 
             // Roll back cached state to allow retry.
             WdfSpinLockAcquire(ctx->Lock);
+            ctx->UpperConnectPending = FALSE;
             KbdLayClearUpperConnectLocked(ctx);
             WdfSpinLockRelease(ctx->Lock);
 
@@ -109,12 +147,37 @@ KbdLayHandleInternalIoctl(
     }
     else if (IoControlCode == IOCTL_INTERNAL_KEYBOARD_DISCONNECT)
     {
-        // Lower stack is disconnecting; drop cached connect state.
+        // Lower stack is disconnecting; drop cached connect state on success.
         WdfSpinLockAcquire(ctx->Lock);
-        KbdLayClearUpperConnectLocked(ctx);
+        BOOLEAN pending = ctx->UpperConnectPending ? TRUE : FALSE;
+        if (!pending)
+            ctx->UpperConnectPending = TRUE;
         WdfSpinLockRelease(ctx->Lock);
 
-        return KbdLayForwardSendAndForget(Request, target);
+        if (pending)
+        {
+            WdfRequestComplete(Request, STATUS_DEVICE_BUSY);
+            return STATUS_DEVICE_BUSY;
+        }
+
+        // Forward down and complete in our completion routine.
+        // NOTE: WdfRequestFormatRequestUsingCurrentType returns VOID.
+        WdfRequestFormatRequestUsingCurrentType(Request);
+        WdfRequestSetCompletionRoutine(Request, KbdLayDisconnectCompletionRoutine, (WDFCONTEXT)ctx);
+
+        if (!WdfRequestSend(Request, target, WDF_NO_SEND_OPTIONS))
+        {
+            NTSTATUS status = WdfRequestGetStatus(Request);
+
+            WdfSpinLockAcquire(ctx->Lock);
+            ctx->UpperConnectPending = FALSE;
+            WdfSpinLockRelease(ctx->Lock);
+
+            WdfRequestComplete(Request, status);
+            return status;
+        }
+
+        return STATUS_PENDING;
     }
 
     // Pass-through for all other internal IOCTLs.

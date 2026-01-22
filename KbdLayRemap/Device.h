@@ -23,7 +23,7 @@ typedef struct KBDLAY_DEVICE_CONTEXT
     // Keyboard class connection we proxy.
     CONNECT_DATA UpperConnect;     // original class connect data
     BOOLEAN      UpperConnectValid;
-    BOOLEAN      UpperConnectPending;
+    BOOLEAN      UpperConnectPending; // in-flight connect/disconnect request
 
     // Physical modifier state as seen from hardware events.
     // (Split L/R so we can reason about shift accurately.)

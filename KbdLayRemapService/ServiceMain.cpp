@@ -97,6 +97,8 @@ int wmain(int argc, wchar_t** argv)
                 // Best-effort fallback to a safe state.
                 DeviceIoctlSetState(h, KBLAY_STATE_BYPASS_HARD);
                 DeviceIoctlSetRole(h, KBLAY_ROLE_NONE);
+                role = KBLAY_ROLE_NONE;
+                state = KBLAY_STATE_BYPASS_HARD;
             }
 
             CloseHandle(h);

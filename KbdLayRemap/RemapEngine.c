@@ -209,6 +209,7 @@ size_t KbdLayRemapOne(
         return 0;
 
     const LONG state = InterlockedCompareExchange(&Ctx->State, 0, 0);
+    const LONG role = InterlockedCompareExchange(&Ctx->Role, 0, 0);
 
     // Hard bypass: do not touch input nor internal state.
     if (state == (LONG)KBLAY_STATE_BYPASS_HARD)
@@ -220,6 +221,18 @@ size_t KbdLayRemapOne(
 
     // Soft bypass: pass through input, but keep tracking physical modifiers.
     if (state == (LONG)KBLAY_STATE_BYPASS_SOFT)
+    {
+        WdfSpinLockAcquire(Ctx->Lock);
+        UpdatePhysicalMods(Ctx, In);
+        WdfSpinLockRelease(Ctx->Lock);
+
+        Out[0] = *In;
+        InterlockedIncrement64(&Ctx->PassThroughCount);
+        return 1;
+    }
+
+    // Active but non-remap role: treat as soft bypass for safety.
+    if (state == (LONG)KBLAY_STATE_ACTIVE && role != (LONG)KBLAY_ROLE_REMAP)
     {
         WdfSpinLockAcquire(Ctx->Lock);
         UpdatePhysicalMods(Ctx, In);
