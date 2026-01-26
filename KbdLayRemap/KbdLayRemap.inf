@@ -7,8 +7,8 @@ Signature   = "$Windows NT$"
 Class       = Keyboard
 ClassGuid   = {4D36E96B-E325-11CE-BFC1-08002BE10318}
 Provider    = %MfgName%
-DriverVer   = 01/21/2026,1.0.0.0
-CatalogFile = KbdLayRemap.cat
+DriverVer   = 01/23/2026,1.0.0.0
+CatalogFile = kbdlayremap.cat
 PnpLockdown = 1
 
 [DestinationDirs]
@@ -48,12 +48,12 @@ ErrorControl   = 1                  ; SERVICE_ERROR_NORMAL
 LoadOrderGroup = Keyboard Port
 ServiceBinary  = %12%\KbdLayRemap.sys
 
-; Attach as Keyboard class UpperFilter (append to existing list)
+; Attach as Keyboard class LowerFilter (append to existing list)
 [KbdLayRemap_Install.NT.HW]
-AddReg = KbdLayRemap_ClassUpperFilter_AddReg
+AddReg = KbdLayRemap_ClassLowerFilter_AddReg
 
-[KbdLayRemap_ClassUpperFilter_AddReg]
-HKLM,"SYSTEM\CurrentControlSet\Control\Class\{4D36E96B-E325-11CE-BFC1-08002BE10318}","UpperFilters",0x00010008,"KbdLayRemap"
+[KbdLayRemap_ClassLowerFilter_AddReg]
+HKLM,"SYSTEM\CurrentControlSet\Control\Class\{4D36E96B-E325-11CE-BFC1-08002BE10318}","LowerFilters",0x00010008,"KbdLayRemap"
 
 ; KMDF directives (inbox on Windows 11, but still valid/typical to declare)
 [KbdLayRemap_Install.NT.Wdf]

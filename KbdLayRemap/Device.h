@@ -6,6 +6,10 @@
 
 #include "..\\Shared\Public.h"
 
+#ifndef KBLAY_DEVICE_SDDL
+#define KBLAY_DEVICE_SDDL L"D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GR;;;BU)"
+#endif
+
 // One rule cell in the inE0/inShift/make-code table.
 typedef struct KBLAY_RULE_CELL
 {
@@ -23,7 +27,6 @@ typedef struct KBDLAY_DEVICE_CONTEXT
     // Keyboard class connection we proxy.
     CONNECT_DATA UpperConnect;     // original class connect data
     BOOLEAN      UpperConnectValid;
-    BOOLEAN      UpperConnectPending; // in-flight connect/disconnect request
 
     // Physical modifier state as seen from hardware events.
     // (Split L/R so we can reason about shift accurately.)
@@ -52,11 +55,18 @@ typedef struct KBDLAY_DEVICE_CONTEXT
 
     WDFSPINLOCK Lock;
 
+    LIST_ENTRY ListEntry;
+    BOOLEAN    Listed;
+    WDFDEVICE  Device;
+
 } KBDLAY_DEVICE_CONTEXT, * PKBDLAY_DEVICE_CONTEXT;
 
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(KBDLAY_DEVICE_CONTEXT, KbdLayGetDeviceContext)
 
 EVT_WDF_DEVICE_CONTEXT_CLEANUP KbdLayEvtDeviceContextCleanup;
+EVT_WDF_DEVICE_SELF_MANAGED_IO_INIT KbdLayEvtDeviceSelfManagedIoInit;
+
+VOID KbdLayRefreshContainerId(_In_ WDFDEVICE Device);
 
 EVT_WDF_IO_QUEUE_IO_DEVICE_CONTROL KbdLayEvtIoDeviceControl;
 EVT_WDF_IO_QUEUE_IO_INTERNAL_DEVICE_CONTROL KbdLayEvtIoInternalDeviceControl;

@@ -54,6 +54,7 @@ KbdLayEvtIoDeviceControl(
             else
             {
                 InterlockedExchange(&ctx->Role, (LONG)in->Role);
+                InterlockedExchange(&ctx->LastErrorNtStatus, STATUS_SUCCESS);
                 status = STATUS_SUCCESS;
             }
         }
@@ -72,6 +73,7 @@ KbdLayEvtIoDeviceControl(
             else
             {
                 InterlockedExchange(&ctx->State, (LONG)in->State);
+                InterlockedExchange(&ctx->LastErrorNtStatus, STATUS_SUCCESS);
                 status = STATUS_SUCCESS;
             }
         }
@@ -92,6 +94,8 @@ KbdLayEvtIoDeviceControl(
                 status = KbdLayRemapLoadRuleBlob(ctx, blob, cb);
                 if (!NT_SUCCESS(status))
                     InterlockedExchange(&ctx->LastErrorNtStatus, (LONG)status);
+                else
+                    InterlockedExchange(&ctx->LastErrorNtStatus, STATUS_SUCCESS);
             }
         }
     }

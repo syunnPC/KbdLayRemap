@@ -119,6 +119,7 @@
     <FilesToPackage Include="$(TargetPath)" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="ControlDevice.h" />
     <ClInclude Include="Device.h" />
     <ClInclude Include="DriverEntry.h" />
     <ClInclude Include="IoctlQueue.h" />
@@ -127,6 +128,7 @@
     <ClInclude Include="Trace.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="ControlDevice.c" />
     <ClCompile Include="Device.c" />
     <ClCompile Include="DriverEntry.c" />
     <ClCompile Include="IoctlQueue.c" />

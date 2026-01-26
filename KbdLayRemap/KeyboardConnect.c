@@ -26,7 +26,6 @@ KbdLayConnectCompletionRoutine(
     if (ctx != NULL)
     {
         WdfSpinLockAcquire(ctx->Lock);
-        ctx->UpperConnectPending = FALSE;
         if (!NT_SUCCESS(status))
             KbdLayClearUpperConnectLocked(ctx);
         WdfSpinLockRelease(ctx->Lock);
@@ -51,7 +50,6 @@ KbdLayDisconnectCompletionRoutine(
     if (ctx != NULL)
     {
         WdfSpinLockAcquire(ctx->Lock);
-        ctx->UpperConnectPending = FALSE;
         if (NT_SUCCESS(status))
             KbdLayClearUpperConnectLocked(ctx);
         WdfSpinLockRelease(ctx->Lock);
@@ -81,9 +79,6 @@ KbdLayHandleInternalIoctl(
         // Only allow one connection.
         WdfSpinLockAcquire(ctx->Lock);
         BOOLEAN alreadyConnected = ctx->UpperConnectValid ? TRUE : FALSE;
-        BOOLEAN pending = ctx->UpperConnectPending ? TRUE : FALSE;
-        if (!alreadyConnected && !pending)
-            ctx->UpperConnectPending = TRUE;
         WdfSpinLockRelease(ctx->Lock);
 
         if (alreadyConnected)
@@ -91,20 +86,12 @@ KbdLayHandleInternalIoctl(
             WdfRequestComplete(Request, STATUS_SHARING_VIOLATION);
             return STATUS_SHARING_VIOLATION;
         }
-        if (pending)
-        {
-            WdfRequestComplete(Request, STATUS_DEVICE_BUSY);
-            return STATUS_DEVICE_BUSY;
-        }
 
         CONNECT_DATA* cd = NULL;
         size_t cb = 0;
         NTSTATUS status = WdfRequestRetrieveInputBuffer(Request, sizeof(CONNECT_DATA), (PVOID*)&cd, &cb);
         if (!NT_SUCCESS(status))
         {
-            WdfSpinLockAcquire(ctx->Lock);
-            ctx->UpperConnectPending = FALSE;
-            WdfSpinLockRelease(ctx->Lock);
             WdfRequestComplete(Request, status);
             return status;
         }
@@ -135,7 +122,6 @@ KbdLayHandleInternalIoctl(
 
             // Roll back cached state to allow retry.
             WdfSpinLockAcquire(ctx->Lock);
-            ctx->UpperConnectPending = FALSE;
             KbdLayClearUpperConnectLocked(ctx);
             WdfSpinLockRelease(ctx->Lock);
 
@@ -148,18 +134,6 @@ KbdLayHandleInternalIoctl(
     else if (IoControlCode == IOCTL_INTERNAL_KEYBOARD_DISCONNECT)
     {
         // Lower stack is disconnecting; drop cached connect state on success.
-        WdfSpinLockAcquire(ctx->Lock);
-        BOOLEAN pending = ctx->UpperConnectPending ? TRUE : FALSE;
-        if (!pending)
-            ctx->UpperConnectPending = TRUE;
-        WdfSpinLockRelease(ctx->Lock);
-
-        if (pending)
-        {
-            WdfRequestComplete(Request, STATUS_DEVICE_BUSY);
-            return STATUS_DEVICE_BUSY;
-        }
-
         // Forward down and complete in our completion routine.
         // NOTE: WdfRequestFormatRequestUsingCurrentType returns VOID.
         WdfRequestFormatRequestUsingCurrentType(Request);
@@ -168,10 +142,6 @@ KbdLayHandleInternalIoctl(
         if (!WdfRequestSend(Request, target, WDF_NO_SEND_OPTIONS))
         {
             NTSTATUS status = WdfRequestGetStatus(Request);
-
-            WdfSpinLockAcquire(ctx->Lock);
-            ctx->UpperConnectPending = FALSE;
-            WdfSpinLockRelease(ctx->Lock);
 
             WdfRequestComplete(Request, status);
             return status;
@@ -250,13 +220,22 @@ KbdLayClassServiceCallback(
         return;
     }
 
-    // Expand buffer: worst-case 3 outputs per input.
-    enum { KBLAY_MAX_OUT = 256 };
-    KEYBOARD_INPUT_DATA out[KBLAY_MAX_OUT];
-    ULONG outCount = 0;
+    ULONG inputConsumed = 0;
+    BOOLEAN upperLost = FALSE;
 
     for (PKEYBOARD_INPUT_DATA p = InputDataStart; p < InputDataEnd; ++p)
     {
+        // If we get disconnected mid-callback, stop calling the upper driver.
+        WdfSpinLockAcquire(ctx->Lock);
+        BOOLEAN stillValid = ctx->UpperConnectValid ? TRUE : FALSE;
+        WdfSpinLockRelease(ctx->Lock);
+
+        if (!stillValid)
+        {
+            upperLost = TRUE;
+            break;
+        }
+
         KEYBOARD_INPUT_DATA tmp[3];
         BOOLEAN didRemap = FALSE;
 
@@ -264,39 +243,24 @@ KbdLayClassServiceCallback(
 
         if (produced == 0)
         {
-            // Best-effort: forward the single input as-is.
-            if (outCount > 0)
-            {
-                ULONG dummy = 0;
-                upperCb(upper.ClassDeviceObject, out, out + outCount, &dummy);
-                outCount = 0;
-            }
+            ULONG consumedOut = 0;
+            upperCb(upper.ClassDeviceObject, p, p + 1, &consumedOut);
+            if (consumedOut == 0)
+                break;
 
-            ULONG dummy = 0;
-            upperCb(upper.ClassDeviceObject, p, p + 1, &dummy);
+            inputConsumed += 1;
             continue;
         }
 
-        if ((outCount + (ULONG)produced) > KBLAY_MAX_OUT)
-        {
-            // Flush current batch to keep output ordered without losing modifier state.
-            if (outCount > 0)
-            {
-                ULONG dummy = 0;
-                upperCb(upper.ClassDeviceObject, out, out + outCount, &dummy);
-                outCount = 0;
-            }
-        }
+        ULONG producedOut = (ULONG)produced;
+        ULONG consumedOut = 0;
+        upperCb(upper.ClassDeviceObject, tmp, tmp + producedOut, &consumedOut);
+        if (consumedOut < producedOut)
+            break;
 
-        for (size_t i = 0; i < produced; ++i)
-            out[outCount++] = tmp[i];
+        inputConsumed += 1;
     }
 
-    // Call upper with our buffer. InputDataConsumed must reflect ORIGINAL input count.
-    if (outCount > 0)
-    {
-        ULONG dummy = 0;
-        upperCb(upper.ClassDeviceObject, out, out + outCount, &dummy);
-    }
-    if (InputDataConsumed) *InputDataConsumed = originalCount;
+    if (InputDataConsumed)
+        *InputDataConsumed = upperLost ? originalCount : inputConsumed;
 }

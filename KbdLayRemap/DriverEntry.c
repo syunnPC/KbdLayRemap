@@ -1,4 +1,5 @@
 #include "DriverEntry.h"
+#include "ControlDevice.h"
 #include "Device.h"
 
 NTSTATUS
@@ -11,7 +12,12 @@ DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING RegistryPath)
     WDF_OBJECT_ATTRIBUTES_INIT(&attributes);
     attributes.EvtCleanupCallback = KbdLayEvtDriverContextCleanup;
 
-    return WdfDriverCreate(DriverObject, RegistryPath, &attributes, &config, WDF_NO_HANDLE);
+    WDFDRIVER driver = NULL;
+    NTSTATUS status = WdfDriverCreate(DriverObject, RegistryPath, &attributes, &config, &driver);
+    if (!NT_SUCCESS(status))
+        return status;
+
+    return KbdLayControlDeviceInitialize(driver);
 }
 
 VOID

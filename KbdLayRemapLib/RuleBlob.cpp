@@ -10,6 +10,8 @@ static HKL LoadKlid(const std::wstring& klid)
 
 static std::wstring GetCharForScan(HKL hkl, UINT sc, bool shift)
 {
+    if (!hkl) return L"";
+
     BYTE ks[256]{};
     if (shift)
     {
@@ -25,6 +27,12 @@ static std::wstring GetCharForScan(HKL hkl, UINT sc, bool shift)
     int r = ToUnicodeEx(vk, sc, ks, buf, 8, 0, hkl);
     if (r == 1)
         return std::wstring(buf, 1);
+    if (r < 0)
+    {
+        // Clear dead-key state.
+        (void)ToUnicodeEx(vk, sc, ks, buf, 8, 0, hkl);
+        return L"";
+    }
 
     // dead keys / multi chars are ignored (best-effort)
     return L"";
@@ -43,6 +51,12 @@ std::vector<BYTE> BuildUsJisRuleBlob(const std::wstring& baseKlid, const std::ws
 {
     HKL base = LoadKlid(baseKlid);
     HKL target = LoadKlid(targetKlid);
+    if (!base || !target)
+    {
+        if (base) UnloadKeyboardLayout(base);
+        if (target) UnloadKeyboardLayout(target);
+        return {};
+    }
 
     std::vector<KBLAY_RULE_ENTRY> entries;
 
@@ -103,5 +117,7 @@ std::vector<BYTE> BuildUsJisRuleBlob(const std::wstring& baseKlid, const std::ws
     if (!entries.empty())
         memcpy(blob.data() + sizeof(h), entries.data(), entries.size() * sizeof(KBLAY_RULE_ENTRY));
 
+    UnloadKeyboardLayout(base);
+    UnloadKeyboardLayout(target);
     return blob;
 }

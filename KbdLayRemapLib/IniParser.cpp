@@ -15,7 +15,14 @@ bool IniParser::Load(const std::wstring& path)
     data_.clear();
     std::wifstream ifs(path);
     if (!ifs) return false;
-    ifs.imbue(std::locale(""));
+    try
+    {
+        ifs.imbue(std::locale(""));
+    }
+    catch (...)
+    {
+        // Fallback to the default "C" locale if the system locale is unavailable.
+    }
 
     std::wstring section;
     std::wstring line;

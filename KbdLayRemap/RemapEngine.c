@@ -49,7 +49,12 @@ static VOID UpdatePhysicalMods(_Inout_ PKBDLAY_DEVICE_CONTEXT Ctx, _In_ const KE
 {
     const BOOLEAN brk = IsKeyBreak(In);
     const BOOLEAN e0 = IsE0(In);
+    const BOOLEAN e1 = IsE1(In);
     const USHORT mc = In->MakeCode;
+
+    // Ignore E1-prefixed sequences (e.g., Pause/Break) to avoid corrupting Ctrl state.
+    if (e1)
+        return;
 
     // Shift (set-1; no E0)
     if (!e0 && mc == KBLAY_MAKE_LSHIFT)
@@ -211,9 +216,14 @@ size_t KbdLayRemapOne(
     const LONG state = InterlockedCompareExchange(&Ctx->State, 0, 0);
     const LONG role = InterlockedCompareExchange(&Ctx->Role, 0, 0);
 
-    // Hard bypass: do not touch input nor internal state.
+    // Hard bypass: pass through input; still track modifiers for correct transitions.
     if (state == (LONG)KBLAY_STATE_BYPASS_HARD)
     {
+        // Keep modifier state in sync so a later transition to ACTIVE is correct.
+        WdfSpinLockAcquire(Ctx->Lock);
+        UpdatePhysicalMods(Ctx, In);
+        WdfSpinLockRelease(Ctx->Lock);
+
         Out[0] = *In;
         InterlockedIncrement64(&Ctx->PassThroughCount);
         return 1;
